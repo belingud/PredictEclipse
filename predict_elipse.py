@@ -296,7 +296,31 @@ class EphemerisManager:
 
     def select_optimal_ephemeris(self, start_date: datetime, end_date: datetime) -> str:
         """
-        Intelligently select the best ephemeris file for the given date range.
+        Intelligently select the best ephemeris file for the given date range using a multi-factor scoring algorithm.
+
+        This algorithm determines the optimal ephemeris by evaluating and balancing multiple factors:
+        1. Time coverage: Ensures the ephemeris fully covers the requested date range
+        2. File size efficiency: Prefers smaller files to reduce download and processing time
+        3. Accuracy rating: Prioritizes higher accuracy ephemerides (exceptional > very_high > high)
+        4. Priority score: Incorporates pre-defined priority ratings for each ephemeris
+        5. General-use bonus: Favors general-purpose ephemerides over specialized ones
+
+        The scoring formula combines these factors with the following weights:
+        - Priority: 40% (reflects overall quality and recommendation level)
+        - File size efficiency: 20% (considers download and processing efficiency)
+        - Coverage match: 20% (prefers appropriately sized time spans)
+        - Accuracy: Bonus points (exceptional: +0.3, very_high: +0.2, high: +0.1)
+        - General use: Bonus points (DE series: +0.1, specialized: -0.2)
+
+        Typical selection results:
+        - Modern date ranges (e.g., 2020-2025): de440t.bsp or de440.bsp (high priority, exceptional accuracy)
+        - Historical ranges (e.g., 1700-1800): de440.bsp (despite expectations of de431/de422, de440's higher
+          priority and accuracy with moderate file size results in the highest score)
+        - Extreme historical/future dates: de431.bsp or de440s.bsp (due to extended coverage)
+
+        Edge cases:
+        - If no ephemeris fully covers the requested range, falls back to predefined options
+          in this order: de440t.bsp, de430t.bsp, de421.bsp
 
         Args:
             start_date: Beginning of prediction period
@@ -335,11 +359,11 @@ class EphemerisManager:
 
             # Calculate final score
             total_score = (
-                priority_score * 0.4
-                + efficiency_score * 0.2
-                + coverage_score * 0.2
-                + accuracy_bonus
-                + general_use_bonus
+                priority_score * 0.4  # Priority Weight
+                + efficiency_score * 0.2  # Efficiency Weight
+                + coverage_score * 0.2  # Coverage Weight
+                + accuracy_bonus  # Accuracy Weight
+                + general_use_bonus  # General Use Weight
             )
 
             candidates.append((filename, total_score, metadata))
@@ -844,7 +868,7 @@ Examples:
     parser.add_argument(
         "--data-dir",
         type=str,
-        help="Directory to store downloaded ephemeris data (default: current directory)"
+        help="Directory to store downloaded ephemeris data (default: current directory)",
     )
 
     return parser
