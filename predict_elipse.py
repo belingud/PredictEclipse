@@ -13,6 +13,7 @@ import argparse
 import logging
 import sys
 import re
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 from urllib.parse import urljoin
@@ -20,7 +21,7 @@ from urllib.parse import urljoin
 import numpy as np
 import requests
 from bs4 import BeautifulSoup
-from skyfield.api import load
+from skyfield.api import load, Loader
 from skyfield.almanac import find_discrete, moon_phases
 
 # Configure logging
@@ -215,9 +216,15 @@ EPHEMERIS_METADATA = {
 class EphemerisManager:
     """Manages ephemeris file selection, loading, and fallback strategies."""
 
-    def __init__(self):
+    def __init__(self, data_dir=None):
         self.available_online = {}
         self.load_timeout = 30
+        self.data_dir = data_dir
+        # Create custom Loader if data directory is specified
+        if data_dir:
+            self.loader = Loader(data_dir)
+        else:
+            self.loader = load
 
     def fetch_available_files(self) -> Dict[str, Dict[str, str]]:
         """
@@ -391,7 +398,7 @@ class EphemerisManager:
         for i, filename in enumerate(unique_sequence):
             try:
                 logger.info(f"Loading ephemeris: {filename}")
-                ephemeris = load(filename)
+                ephemeris = self.loader(filename)
 
                 # Validate time range coverage
                 if filename in EPHEMERIS_METADATA:
@@ -717,7 +724,7 @@ class EclipseReporter:
 
             print(f"     Node Distance: {eclipse['node_distance']:.2f}°")
             print(f"     Earth-Moon Distance: {eclipse['earth_moon_distance']:,.0f} km")
-            print(f"     Earth-Sun Distance:  {eclipse['earth_sun_distance']:,.0f} km")
+            print(f"     Earth-Sun Distance:  {eclipse['earth_sun_distance']:.0f} km")
             print(f"     Moon Apparent Diameter: {eclipse['moon_apparent_diameter']:.2f}'")
             print(f"     Sun Apparent Diameter:  {eclipse['sun_apparent_diameter']:.2f}'")
 
@@ -775,7 +782,7 @@ class EclipseReporter:
         print("Priority scoring: Higher numbers indicate better general-purpose suitability")
 
 
-def parse_arguments() -> argparse.Namespace:
+def gen_parser() -> argparse.Namespace:
     """Parse and validate command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Advanced Eclipse Prediction Tool",
@@ -783,8 +790,11 @@ def parse_arguments() -> argparse.Namespace:
 Examples:
   %(prog)s --type solar --start 2024-01-01 --end 2026-12-31
   %(prog)s --type lunar --start 2025-06-01 --end 2025-12-31 --ephemeris de440t.bsp
+  %(prog)s --type lunar --start 2025-06-01 --end 2025-12-31 --ephemeris de440t.bsp --data-dir ~/skyfield-data
+  %(prog)s --type lunar --start 2025-06-01 --end 2025-12-31 --ephemeris https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de432s.bsp
   %(prog)s --catalog
   %(prog)s --online-check
+  %(prog)s --type solar --data-dir ~/skyfield-data
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -831,7 +841,13 @@ Examples:
 
     parser.add_argument("--output", "-f", type=str, help="Output results to file (CSV format)")
 
-    return parser.parse_args()
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        help="Directory to store downloaded ephemeris data (default: current directory)"
+    )
+
+    return parser
 
 
 def validate_date_range(start_date: datetime, end_date: datetime) -> None:
@@ -904,14 +920,22 @@ def save_results_to_csv(eclipses: List[Dict], filename: str, eclipse_type: str) 
 def main():
     """Main application entry point."""
     try:
-        args = parse_arguments()
+        parser = gen_parser()
+        args = parser.parse_args()
 
         # Configure logging level
         if args.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
 
-        # Initialize ephemeris manager
-        eph_manager = EphemerisManager()
+        # Deal with data directory
+        data_dir = None
+        if args.data_dir:
+            data_dir = os.path.expanduser(args.data_dir)
+            os.makedirs(data_dir, exist_ok=True)
+            logger.info(f"Using data directory: {data_dir}")
+
+        # Initialize ephemeris manager with custom data directory if specified
+        eph_manager = EphemerisManager(data_dir)
 
         # Handle catalog display
         if args.catalog:
@@ -936,7 +960,7 @@ def main():
         # Validate required arguments
         if not args.type:
             print("❌ Error: --type argument is required")
-            print("Use --help for usage information")
+            parser.print_help()
             sys.exit(1)
 
         # Parse and validate dates
@@ -973,7 +997,9 @@ def main():
         ephemeris = eph_manager.load_with_fallback(ephemeris_file, start_date, end_date)
 
         # Initialize calculator and perform predictions
-        calculator = EclipseCalculator(ephemeris, load.timescale())
+        # Get timescale using the same data directory as the loader
+        ts = eph_manager.loader.timescale() if args.data_dir else load.timescale()
+        calculator = EclipseCalculator(ephemeris, ts)
 
         print(
             f"\n🔮 Predicting {args.type} eclipses from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"

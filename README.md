@@ -54,6 +54,16 @@ python predict_elipse.py --type solar --start 2024-01-01 --end 2030-12-31
 You can manually specify which JPL ephemeris file to use:
 ```bash
 python predict_elipse.py --type lunar --ephemeris de440.bsp
+# or use a url
+python predict_elipse.py --eph https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de432s.bsp --type lunar
+```
+
+### Specifying Skyfield Dir
+
+You can specify skyfield data dir to save and use:
+
+```bash
+python predict_elipse.py --type lunar --ephemeris de440.bsp --data-dir ~/skyfield-data
 ```
 
 ### Listing Available Ephemeris Files
@@ -65,13 +75,14 @@ python predict_elipse.py --list-eph
 
 ## Command Line Options
 
-| Option | Description |
-|--------|-------------|
-| `--type {solar,lunar}` | Required. Specify the type of eclipse to predict |
-| `--start YYYY-MM-DD` | Start date (default: today) |
-| `--end YYYY-MM-DD` | End date (default: two years from start date) |
-| `--ephemeris FILE` | Ephemeris file to use (default: auto-selected based on date range) |
-| `--list-eph` | List all available ephemeris files and their coverage |
+| Option                 | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `--type {solar,lunar}` | Required. Specify the type of eclipse to predict                   |
+| `--start YYYY-MM-DD`   | Start date (default: today)                                        |
+| `--end YYYY-MM-DD`     | End date (default: two years from start date)                      |
+| `--ephemeris FILE`     | Ephemeris file to use (default: auto-selected based on date range) |
+| `--data-dir`           | Specific skyfield data save dir (default: current dir)             |
+| `--list-eph`           | List all available ephemeris files and their coverage              |
 
 ## Understanding Ephemeris Files
 
