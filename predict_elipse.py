@@ -20,7 +20,7 @@ from urllib.parse import urljoin
 
 import numpy as np
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from skyfield.api import load, Loader
 from skyfield.almanac import find_discrete, moon_phases
 
@@ -44,7 +44,7 @@ NODE_DISTANCE_PARTIAL = 1.2  # Node distance threshold for partial eclipses
 NODE_DISTANCE_PENUMBRAL = 1.5  # Node distance threshold for penumbral eclipses
 
 # Comprehensive ephemeris metadata
-EPHEMERIS_METADATA = {
+EPHEMERIS_METADATA: dict[str, dict[str, int | str]] = {
     # DE400 series - Legacy but still useful
     "de405.bsp": {
         "start_year": 1600,
@@ -220,11 +220,12 @@ class EphemerisManager:
         self.available_online = {}
         self.load_timeout = 30
         self.data_dir = data_dir
+        self.loader: Loader
         # Create custom Loader if data directory is specified
         if data_dir:
-            self.loader = Loader(data_dir)
+            self.loader: Loader = Loader(data_dir)
         else:
-            self.loader = load
+            self.loader: Loader = Loader(".")
 
     def fetch_available_files(self) -> Dict[str, Dict[str, str]]:
         """
@@ -250,13 +251,15 @@ class EphemerisManager:
 
                 # Parse directory listing for .bsp files
                 for link in soup.find_all("a", href=re.compile(r"\.bsp$", re.IGNORECASE)):
+                    if not isinstance(link, Tag):
+                        continue
                     filename = link.get("href")
                     if not filename:
                         continue
 
                     # Extract file metadata from table row
                     parent_row = link.find_parent("tr")
-                    if parent_row:
+                    if parent_row and isinstance(parent_row, Tag):
                         cells = parent_row.find_all("td")
                         size_info = cells[2].text.strip() if len(cells) > 2 else "Unknown"
                         date_info = cells[1].text.strip() if len(cells) > 1 else "Unknown"
@@ -266,7 +269,7 @@ class EphemerisManager:
 
                         available_files[filename] = {
                             "source_url": repo_url,
-                            "download_url": urljoin(repo_url, filename),
+                            "download_url": urljoin(repo_url, str(filename or "")),
                             "size": size_display,
                             "modified_date": date_info,
                         }
@@ -338,27 +341,30 @@ class EphemerisManager:
 
         for filename, metadata in EPHEMERIS_METADATA.items():
             # Check if ephemeris covers the required time range
-            if start_year < metadata["start_year"] or end_year > metadata["end_year"]:
+            if start_year < int(metadata["start_year"]) or end_year > int(metadata["end_year"]):
                 continue
 
             # Calculate various scoring factors
-            coverage_span = metadata["end_year"] - metadata["start_year"]
-            efficiency_score = 1.0 - (metadata["size_mb"] / 1000.0)  # Prefer smaller files
-            coverage_score = min(
-                1.0, prediction_span / coverage_span
-            )  # Prefer appropriate coverage
-            priority_score = metadata["priority"] / 10.0  # Use priority rating
+            coverage_span = int(metadata["end_year"]) - int(metadata["start_year"])
+            efficiency_score = 1.0 - float(metadata["size_mb"]) / 1000.0  # Prefer smaller files
+            coverage_score = min(1.0, prediction_span / coverage_span)  # Prefer appropriate coverage
+            priority_score = float(metadata["priority"]) / 10.0  # Use priority rating
 
             # Accuracy bonus
-            accuracy_bonus = {"exceptional": 0.3, "very_high": 0.2, "high": 0.1}.get(
-                metadata["accuracy"], 0.0
-            )
+            if metadata["accuracy"] not in {"exceptional", "very_high", "high"}:
+                logger.warning(f"Unknown accuracy for {filename}: {metadata['accuracy']}")
+                accuracy_bonus = 0.0
+            else:
+                # Map accuracy to bonus points
+                accuracy_bonus: float = {"exceptional": 0.3, "very_high": 0.2, "high": 0.1}.get(
+                    metadata["accuracy"], 0.0
+                )
 
             # Penalize specialized ephemerides for general use
-            general_use_bonus = 0.1 if filename.startswith("de") else -0.2
+            general_use_bonus: float = 0.1 if filename.startswith("de") else -0.2
 
             # Calculate final score
-            total_score = (
+            total_score: float = (
                 priority_score * 0.4  # Priority Weight
                 + efficiency_score * 0.2  # Efficiency Weight
                 + coverage_score * 0.2  # Coverage Weight
@@ -412,7 +418,7 @@ class EphemerisManager:
 
         # Remove duplicates while preserving order
         unique_sequence = []
-        seen = set()
+        seen: set[str] = set()
         for eph in fallback_sequence:
             if eph not in seen:
                 unique_sequence.append(eph)
@@ -441,16 +447,14 @@ class EphemerisManager:
                     logger.info("Attempting next fallback option...")
 
         # If all options failed
-        raise RuntimeError(
-            f"Unable to load any ephemeris file. Last error: {last_error}"
-        ) from last_error
+        raise RuntimeError(f"Unable to load any ephemeris file. Last error: {last_error}")
 
     def _validate_time_coverage(self, filename: str, start_date: datetime, end_date: datetime):
         """Validate that ephemeris covers the required time range."""
-        metadata = EPHEMERIS_METADATA[filename]
+        metadata: dict[str, str | int] = EPHEMERIS_METADATA[filename]
         start_year, end_year = start_date.year, end_date.year
 
-        if start_year < metadata["start_year"] or end_year > metadata["end_year"]:
+        if start_year < int(metadata["start_year"]) or end_year > int(metadata["end_year"]):
             logger.warning(
                 f"Time range {start_year}-{end_year} may exceed reliable coverage of "
                 f"{filename} ({metadata['start_year']}-{metadata['end_year']})"
@@ -479,9 +483,7 @@ class EclipseCalculator:
             Apparent diameter in arcminutes
         """
         angular_radius = np.arctan(radius_km / distance_km)
-        return (
-            np.degrees(angular_radius) * 60 * 2
-        )  # Convert to arcminutes, multiply by 2 for diameter
+        return np.degrees(angular_radius) * 60 * 2  # Convert to arcminutes, multiply by 2 for diameter
 
     def calculate_separation_angle(self, pos1: np.ndarray, pos2: np.ndarray) -> float:
         """
@@ -494,9 +496,12 @@ class EclipseCalculator:
         Returns:
             Angular separation in degrees
         """
-        dot_product = np.dot(pos1, pos2)
-        mag1 = np.linalg.norm(pos1)
-        mag2 = np.linalg.norm(pos2)
+        pos1_array = np.asarray(pos1, dtype=float)
+        pos2_array = np.asarray(pos2, dtype=float)
+
+        dot_product = float(np.sum(pos1_array * pos2_array))
+        mag1: float = np.linalg.norm(pos1_array)
+        mag2: float = np.linalg.norm(pos2_array)
 
         # Prevent numerical errors
         cos_angle = np.clip(dot_product / (mag1 * mag2), -1.0, 1.0)
@@ -599,13 +604,11 @@ class EclipseCalculator:
             earth_sun_dist = np.linalg.norm(sun_pos.position.km)
 
             # Calculate apparent diameters
-            moon_diameter = self.calculate_apparent_diameter(MOON_RADIUS_KM, earth_moon_dist)
-            sun_diameter = self.calculate_apparent_diameter(SUN_RADIUS_KM, earth_sun_dist)
+            moon_diameter = self.calculate_apparent_diameter(MOON_RADIUS_KM, float(earth_moon_dist))
+            sun_diameter = self.calculate_apparent_diameter(SUN_RADIUS_KM, float(earth_sun_dist))
 
             # Calculate geometric parameters
-            separation_angle = self.calculate_separation_angle(
-                sun_pos.position.km, moon_pos.position.km
-            )
+            separation_angle = self.calculate_separation_angle(sun_pos.position.km, moon_pos.position.km)
             node_distance = self.calculate_node_distance(moon_pos)
 
             # Determine eclipse type
@@ -671,13 +674,11 @@ class EclipseCalculator:
             earth_sun_dist = np.linalg.norm(sun_pos.position.km)
 
             # Calculate apparent diameters
-            moon_diameter = self.calculate_apparent_diameter(MOON_RADIUS_KM, earth_moon_dist)
-            sun_diameter = self.calculate_apparent_diameter(SUN_RADIUS_KM, earth_sun_dist)
+            moon_diameter = self.calculate_apparent_diameter(MOON_RADIUS_KM, float(earth_moon_dist))
+            sun_diameter = self.calculate_apparent_diameter(SUN_RADIUS_KM, float(earth_sun_dist))
 
             # Calculate geometric parameters
-            separation_angle = self.calculate_separation_angle(
-                sun_pos.position.km, moon_pos.position.km
-            )
+            separation_angle = self.calculate_separation_angle(sun_pos.position.km, moon_pos.position.km)
             node_distance = self.calculate_node_distance(moon_pos)
 
             # Determine eclipse type
@@ -806,7 +807,7 @@ class EclipseReporter:
         print("Priority scoring: Higher numbers indicate better general-purpose suitability")
 
 
-def gen_parser() -> argparse.Namespace:
+def gen_parser() -> argparse.ArgumentParser:
     """Parse and validate command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Advanced Eclipse Prediction Tool",
@@ -830,13 +831,9 @@ Examples:
         help="Type of eclipse to predict (solar or lunar)",
     )
 
-    parser.add_argument(
-        "--start", "-s", type=str, help="Start date in YYYY-MM-DD format (default: today)"
-    )
+    parser.add_argument("--start", "-s", type=str, help="Start date in YYYY-MM-DD format (default: today)")
 
-    parser.add_argument(
-        "--end", "-e", type=str, help="End date in YYYY-MM-DD format (default: 2 years from start)"
-    )
+    parser.add_argument("--end", "-e", type=str, help="End date in YYYY-MM-DD format (default: 2 years from start)")
 
     parser.add_argument(
         "--ephemeris",
@@ -859,9 +856,7 @@ Examples:
         help="Check online repositories for available ephemeris files",
     )
 
-    parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable verbose logging output"
-    )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging output")
 
     parser.add_argument("--output", "-f", type=str, help="Output results to file (CSV format)")
 
@@ -881,9 +876,7 @@ def validate_date_range(start_date: datetime, end_date: datetime) -> None:
 
     time_span = end_date - start_date
     if time_span.days > 365 * 20:  # 20 years
-        logger.warning(
-            f"Large time span ({time_span.days} days) may require significant computation time"
-        )
+        logger.warning(f"Large time span ({time_span.days} days) may require significant computation time")
         response = input("Continue with large time span? (y/N): ")
         if response.lower() != "y":
             sys.exit(0)
